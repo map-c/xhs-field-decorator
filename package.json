@@ -1,0 +1,21 @@
+{
+  "name": "xhs-field-decorator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "小红书笔记采集 —— 钉钉 AI 表格 AI 字段（FaaS，Object 摘要）",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "dingtalk-docs-cool-app start:field",
+    "build": "dingtalk-docs-cool-app pack:field",
+    "pack": "dingtalk-docs-cool-app pack:field",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "dingtalk-docs-cool-app": "0.3.4",
+    "@types/node-fetch": "^2.6.12"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5"
+  }
+}

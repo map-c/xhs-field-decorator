@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+# 本地调试授权 mock（如有）含凭证，勿提交
+config.json
+output/
