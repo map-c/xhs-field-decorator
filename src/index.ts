@@ -4,11 +4,10 @@
 // （https://caiji.aipaint.cc/extract），把标题/作者/正文/点赞/收藏/评论/转发/发布时间/
 // 封面链接/状态/采集时间塞进一个 Object 单元格卡片。引用的链接列变更时自动重算。
 //
-// 设计约束（钉钉 FaaS）：一个字段=一列。Object 属性除文本外**也支持 Attachment**（SDK 类型
-// PureObjectFieldProperty 允许 Text/Number/Link/Attachment，钉钉开发文档「只支持文本」的说法已过时）——
-// 所以本字段在一个 Object 里同时带出文本摘要 + 图片附件，图片实测会被钉钉下载转存进自有 OSS、
-// 真正渲染且持久（不随小红书 CDN 过期裂图）。复用 /extract 的 ?cache 边缘缓存（status=ok 缓存
-// 10 分钟）。外部请求必须走 context.fetch（node-fetch 语法）。
+// 设计约束（钉钉 FaaS）：一个字段=一列。图片以**文本链接**形式输出（多张用换行分隔），
+// 不再用 Attachment 附件——生产环境不支持附件形态，故统一降级为纯文本 URL，可直接复制/点开。
+// 复用 /extract 的 ?cache 边缘缓存（status=ok 缓存 10 分钟）。外部请求必须走 context.fetch
+// （node-fetch 语法）。
 
 import { FieldType, fieldDecoratorKit, FormItemComponent, FieldExecuteCode } from 'dingtalk-docs-cool-app';
 const { t } = fieldDecoratorKit;
@@ -125,8 +124,8 @@ fieldDecoratorKit.setDecorator({
         { key: 'comments', type: FieldType.Text, title: t('pComments') },
         { key: 'shares', type: FieldType.Text, title: t('pShares') },
         { key: 'publishTime', type: FieldType.Text, title: t('pPublishTime') },
-        // 图片做成 Attachment 属性：钉钉会把 url 下载转存并渲染成图（Object 属性支持 Attachment）。
-        { key: 'images', type: FieldType.Attachment, title: t('pImages') },
+        // 图片以文本链接输出（多张换行分隔）；生产环境不支持 Attachment，故用纯文本 URL。
+        { key: 'images', type: FieldType.Text, title: t('pImages') },
         { key: 'status', type: FieldType.Text, title: t('pStatus') },
         { key: 'fetchedAt', type: FieldType.Text, title: t('pFetchedAt') },
       ],
@@ -175,12 +174,8 @@ fieldDecoratorKit.setDecorator({
           comments: d.comment_count || '',
           shares: d.share_count || '',
           publishTime: d.publish_time || '',
-          // 附件字段有「最多 5 张图」的平台上限，超出会报错，故封顶取前 5 张。
-          images: (d.image_proxy_urls || []).slice(0, 5).map((url, i) => ({
-            fileName: `小红书图_${i + 1}.jpg`,
-            type: 'image',
-            url,
-          })),
+          // 图片输出为文本链接，多张用换行分隔（不再受附件「最多 5 张」限制，全部带出）。
+          images: (d.image_proxy_urls || []).join('\n'),
           status: d.status || '',
           fetchedAt: d.fetched_at || '',
         },
