@@ -43,23 +43,25 @@ npm run start         # 启动本地 FaaS 调试服务（dingtalk-docs-cool-app 
 > open -na "Google Chrome" --args --user-data-dir="/tmp/chrome_dev_test" --disable-web-security --disable-site-isolation-trials --disable-features=BlockInsecurePrivateNetworkRequests
 > ```
 
-### ⚠️ FaaS `execute` 入参结构（踩过坑，务必按此取值）
+### FaaS `execute` 入参结构（按官方文档取值）
 
-`execute(context, params)` 的 `params` **不是直接给值**，而是「引用 + 共享值」两段式：
+`execute(context, formData)` 的第二参数就是 `formData`，`formData.<key>` **直接是引用列在当前行的单元格值**（`string` 或 `{ url/link/text }`）：
 
 ```jsonc
-{
-  "formData":     { "noteLink": { "type": "fieldRef", "value": { "fieldId": "Cqfx1VU" } } },
-  "sharedFields": { "Cqfx1VU": { "fieldName": "标题", "value": "https://www.xiaohongshu.com/..." } }
-}
+{ "noteLink": "https://www.xiaohongshu.com/..." }   // 或 { "noteLink": { "link": "https://..." } }
 ```
 
-`FieldSelect` 选中的列，`formData.<key>` 只有 `fieldId` 引用，**真实单元格值在 `sharedFields[fieldId].value`**。
-本项目用 `resolveNoteLink()` 解析。直接读 `formData.noteLink` 会永远 `undefined` → 报 `errEmpty`(code 300204)。
+本项目用 `pickUrl(formData.noteLink)` 取值即可。
 
-另外：`execute` **运行时返回的 `msg` 不做 i18n 占位替换**，报错文案必须是真实字符串，用 `t()` 会原样输出 `${{key}}`。
+> ⚠️ **不要依赖 `sharedFields` / `fieldRef`**：开发环境曾把底层优化的中间结构（`formData.noteLink` 变成 `{ type:'fieldRef', value:{ fieldId } }`、真值挪到 `sharedFields[fieldId].value`）透出给字段代码。**官方明确回复这是开发环境的问题代码，底层优化不应对开发者透出，线上无此问题，按文档对接即可，下个版本开发环境也会修正。** 早期为此写过 `resolveNoteLink()` 走 `sharedFields`，已回退。
 
-> 完整排查过程见 `docs/钉钉AI表格插件接入与踩坑记录.md` 坑 7。
+### 错误如何透出给用户
+
+- `msg` **不向用户透出**（官方 execute.md：仅供开发者排查），且运行时不做 i18n 占位替换。
+- 要让用户看到失败原因，用 **`errorMessage`（key）+ `errorMessages`（i18n 映射）**，且**仅 `code=FieldExecuteCode.Error` 时生效**。
+- 本字段按采集 `status` 映射：`login_required / redirected / empty / empty_shell` → 各自的用户文案，其余落 `fetch_failed`；同时保留 `msg` 带具体 status/error 供开发排查。
+
+> 排查过程见 `docs/钉钉AI表格插件接入与踩坑记录.md` 坑 7。
 
 ## 打包 / 上架
 
@@ -75,7 +77,7 @@ npm run build         # dingtalk-docs-cool-app pack:field
 `GET /extract?url=<encoded>&retries=2` → `{ ok, data }`，本字段用到的 `data` 键：
 `title / content / author / liked_count / collected_count / comment_count / share_count /
 publish_time / image_proxy_urls[] / status / fetched_at`。仅 `status==='ok'` 写入卡片，
-其余（login_required/redirected/empty/error）返回错误态让用户可见并手动重试。
+其余（login_required/redirected/empty/error）返回错误态（见「错误如何透出给用户」）让用户可见并手动重试。
 
 ## 新需求
 

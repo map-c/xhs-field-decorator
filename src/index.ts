@@ -43,40 +43,19 @@ type LinkCellValue =
 function pickUrl(value: LinkCellValue): string {
   if (!value) return '';
   if (typeof value === 'string') return value.trim();
-  // 优先 link（钉钉 Link 字段真实 URL），再 url，最后 text（纯文本列）。
-  return (value.link || value.url || value.text || '').trim();
+  // 按官方文档：Link 字段值是 { url, text }（formItems.md）。取 url，纯文本列走 text；
+  // link 仅作历史兜底（个别环境曾出现），不再优先。
+  return (value.url || value.link || value.text || '').trim();
 }
 
-// execute 第二参数的真实结构（钉钉调试态与上架一致，实测确认）：
-//   { formData: { <formKey>: { type:'fieldRef', value:{ fieldId } } | 直接值 },
-//     sharedFields: { <fieldId>: { fieldName, fieldType, value } } }
-// FieldSelect 引用的列，值不在 formData 里，而要用 fieldId 去 sharedFields 查。
-interface FieldRef {
-  type?: string;
-  value?: { fieldId?: string };
-}
-interface SharedField {
-  fieldId?: string;
-  fieldName?: string;
-  fieldType?: string;
-  value?: LinkCellValue;
-}
-interface ExecuteParams {
-  formData?: Record<string, FieldRef | LinkCellValue>;
-  sharedFields?: Record<string, SharedField>;
-}
-
-// 从 execute 入参里解析出「笔记链接」配置项引用列在当前行的真实链接。
-function resolveNoteLink(params: ExecuteParams): string {
-  const ref = params?.formData?.noteLink;
-  if (!ref) return '';
-  // 字段引用：拿 fieldId 去 sharedFields 取该列在当前行的单元格值。
-  if (typeof ref === 'object' && (ref as FieldRef).type === 'fieldRef') {
-    const fid = (ref as FieldRef).value?.fieldId;
-    return fid ? pickUrl(params?.sharedFields?.[fid]?.value) : '';
-  }
-  // 兜底：某些场景 formData 里直接就是值（string 或 {url/link/text}）。
-  return pickUrl(ref as LinkCellValue);
+// execute 第二参数按官方文档就是 formData：{ <formKey>: 单元格值 }。
+// noteLink 直接是「笔记链接」引用列在当前行的值（string 或 { url/link/text }）。
+//
+// ⚠️ 不要再依赖 sharedFields / fieldRef：那是开发环境底层优化透出的中间结构，官方明确
+// 回复「这是开发环境的问题代码，底层优化不应对开发者透出，线上无此问题，按文档对接即可，
+// 下个版本开发环境也会修正」。故这里只按文档读 formData 的值。
+interface ExecuteFormData {
+  noteLink?: LinkCellValue;
 }
 
 fieldDecoratorKit.setDecorator({
@@ -97,8 +76,11 @@ fieldDecoratorKit.setDecorator({
       pStatus: '采集状态',
       pFetchedAt: '采集时间',
       pSource: '采集来源',
-      errEmpty: '链接为空，请在引用字段里填入小红书笔记链接',
-      errFetch: '采集失败',
+      // 用户可见的失败文案（经 errorMessages 透出，按采集 status 映射）。
+      eLoginRequired: '登录态失效，请刷新 Cookie 后重试',
+      eRedirected: '链接已过期或失效，请重新分享获取新链接',
+      eEmpty: '未找到笔记内容（可能已删除或设为私密）',
+      eFetchFailed: '采集失败，请稍后重试',
     },
     'en-US': {
       noteLink: 'Note link',
@@ -114,8 +96,10 @@ fieldDecoratorKit.setDecorator({
       pStatus: 'Status',
       pFetchedAt: 'Fetched at',
       pSource: 'Source',
-      errEmpty: 'Link is empty; fill the referenced field with a Xiaohongshu note link',
-      errFetch: 'Extract failed',
+      eLoginRequired: 'Login expired; refresh the cookie and retry',
+      eRedirected: 'Link expired or invalid; re-share to get a fresh link',
+      eEmpty: 'No note content found (deleted or private)',
+      eFetchFailed: 'Extract failed; please retry later',
     },
     'ja-JP': {
       noteLink: 'ノートリンク',
@@ -131,9 +115,21 @@ fieldDecoratorKit.setDecorator({
       pStatus: 'ステータス',
       pFetchedAt: '取得日時',
       pSource: '取得元',
-      errEmpty: 'リンクが空です。参照フィールドに小紅書ノートリンクを入力してください',
-      errFetch: '取得に失敗しました',
+      eLoginRequired: 'ログインが失効しました。Cookie を更新して再試行してください',
+      eRedirected: 'リンクが失効しています。再共有して新しいリンクを取得してください',
+      eEmpty: 'ノート内容が見つかりません（削除または非公開）',
+      eFetchFailed: '取得に失敗しました。後でもう一度お試しください',
     },
+  },
+
+  // 用户可见错误：execute 返回 errorMessage=<key>，宿主展示这里映射到的 i18n 文案。
+  // 注意 errorMessage 仅在 code=FieldExecuteCode.Error 时生效（execute.md）；msg 不向用户透出。
+  errorMessages: {
+    login_required: t('eLoginRequired'),
+    redirected: t('eRedirected'),
+    empty: t('eEmpty'),
+    empty_shell: t('eEmpty'),
+    fetch_failed: t('eFetchFailed'),
   },
 
   formItems: [
@@ -174,8 +170,8 @@ fieldDecoratorKit.setDecorator({
     },
   },
 
-  execute: async (context, params: ExecuteParams) => {
-    const link = resolveNoteLink(params);
+  execute: async (context, formData: ExecuteFormData) => {
+    const link = pickUrl(formData?.noteLink);
     if (!link) {
       return {
         code: FieldExecuteCode.InvalidArgument,
@@ -198,11 +194,15 @@ fieldDecoratorKit.setDecorator({
 
       // 采集失败（login_required / redirected / empty / error 等）：返回错误态，让用户看到
       // 原因并可手动重试，不写入半成品卡片。
+      // 用户看到的是 errorMessage 映射的 i18n 文案（errorMessages）；msg 仅供开发排查（带具体 status/error）。
       if (d.status !== 'ok') {
+        const KNOWN = ['login_required', 'redirected', 'empty', 'empty_shell'];
+        const key = KNOWN.includes(d.status || '') ? (d.status as string) : 'fetch_failed';
         const reason = d.status ? `${d.status}${d.error ? `（${d.error}）` : ''}` : 'unknown';
         return {
           code: FieldExecuteCode.Error,
           data: null,
+          errorMessage: key,
           msg: `采集失败：${reason}`,
         };
       }
@@ -230,7 +230,8 @@ fieldDecoratorKit.setDecorator({
       return {
         code: FieldExecuteCode.Error,
         data: null,
-        msg: `采集失败：${error instanceof Error ? error.message : String(error)}`,
+        errorMessage: 'fetch_failed',
+        msg: `采集异常：${error instanceof Error ? error.message : String(error)}`,
       };
     }
   },
