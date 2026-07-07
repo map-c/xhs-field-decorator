@@ -33,13 +33,50 @@ interface ExtractData {
   engine?: string; // 实际出数引擎：home-cdp=自研 / tikhub=第三方付费
 }
 
-// FieldSelect 选中的链接列，取到的单元格值：Link 字段是 {url,text}，Text 字段是 string。
-type LinkCellValue = string | { url?: string; text?: string } | null | undefined;
+// 单元格值可能形态：纯文本列是 string；钉钉 Link 字段是 { text, link }，有的是 { url, text }。
+type LinkCellValue =
+  | string
+  | { url?: string; link?: string; text?: string }
+  | null
+  | undefined;
 
 function pickUrl(value: LinkCellValue): string {
   if (!value) return '';
   if (typeof value === 'string') return value.trim();
-  return (value.url || value.text || '').trim();
+  // 优先 link（钉钉 Link 字段真实 URL），再 url，最后 text（纯文本列）。
+  return (value.link || value.url || value.text || '').trim();
+}
+
+// execute 第二参数的真实结构（钉钉调试态与上架一致，实测确认）：
+//   { formData: { <formKey>: { type:'fieldRef', value:{ fieldId } } | 直接值 },
+//     sharedFields: { <fieldId>: { fieldName, fieldType, value } } }
+// FieldSelect 引用的列，值不在 formData 里，而要用 fieldId 去 sharedFields 查。
+interface FieldRef {
+  type?: string;
+  value?: { fieldId?: string };
+}
+interface SharedField {
+  fieldId?: string;
+  fieldName?: string;
+  fieldType?: string;
+  value?: LinkCellValue;
+}
+interface ExecuteParams {
+  formData?: Record<string, FieldRef | LinkCellValue>;
+  sharedFields?: Record<string, SharedField>;
+}
+
+// 从 execute 入参里解析出「笔记链接」配置项引用列在当前行的真实链接。
+function resolveNoteLink(params: ExecuteParams): string {
+  const ref = params?.formData?.noteLink;
+  if (!ref) return '';
+  // 字段引用：拿 fieldId 去 sharedFields 取该列在当前行的单元格值。
+  if (typeof ref === 'object' && (ref as FieldRef).type === 'fieldRef') {
+    const fid = (ref as FieldRef).value?.fieldId;
+    return fid ? pickUrl(params?.sharedFields?.[fid]?.value) : '';
+  }
+  // 兜底：某些场景 formData 里直接就是值（string 或 {url/link/text}）。
+  return pickUrl(ref as LinkCellValue);
 }
 
 fieldDecoratorKit.setDecorator({
@@ -137,13 +174,15 @@ fieldDecoratorKit.setDecorator({
     },
   },
 
-  execute: async (context, formData: { noteLink: LinkCellValue }) => {
-    const link = pickUrl(formData.noteLink);
+  execute: async (context, params: ExecuteParams) => {
+    const link = resolveNoteLink(params);
     if (!link) {
       return {
         code: FieldExecuteCode.InvalidArgument,
         data: null,
-        msg: t('errEmpty'),
+        // 注意：execute 运行时返回的 msg 不走 i18n 占位替换，必须给真实文案，
+        // 不能用 t()（那会原样输出 ${{errEmpty}}）。
+        msg: '未取到链接：请在字段配置里把「笔记链接」绑定到放链接的列，且该列当前行有值（调试态只触发第一行）。',
       };
     }
 
@@ -164,7 +203,7 @@ fieldDecoratorKit.setDecorator({
         return {
           code: FieldExecuteCode.Error,
           data: null,
-          msg: `${t('errFetch')}：${reason}`,
+          msg: `采集失败：${reason}`,
         };
       }
 
@@ -191,7 +230,7 @@ fieldDecoratorKit.setDecorator({
       return {
         code: FieldExecuteCode.Error,
         data: null,
-        msg: `${t('errFetch')}：${error instanceof Error ? error.message : String(error)}`,
+        msg: `采集失败：${error instanceof Error ? error.message : String(error)}`,
       };
     }
   },
