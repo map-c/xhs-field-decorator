@@ -1,66 +1,83 @@
 # xhs-field-decorator
 
-小红书笔记采集的**钉钉 AI 表格 AI 字段（FaaS 版）**。
+小红书笔记采集的**钉钉 AI 表格 AI 字段（FaaS 版）**。与边栏插件（`dingtalk-plugin/`）并行，
+共用同一个已上线的采集 API `https://caiji.aipaint.cc/extract`。
 
-在表格的「链接」列填入小红书笔记链接，本字段逐行调用采集 API
-`https://caiji.aipaint.cc/extract`，把结果写进**一个 Object 单元格**（标题/作者/正文/点赞/
-收藏/评论/转发/发布时间/图片/采集状态/采集时间），引用列变更时自动重算。
+> 这是「AI 字段」入口：行级、声明式——在「链接」列填好笔记链接，本字段逐行自动采集并把结果
+> 写进**一个 Object 摘要单元格**，引用列变更时自动重算。无需点按钮（区别于边栏插件的手动交互）。
 
-## 字段形态
+## 形态：单个 Object 字段 = 文本摘要 + 图片附件（一次配置全带出）
 
-单个 Object 字段，`extra.properties` 含以下属性；勾选「获取扩展信息」可把每个属性自动同步成
-独立列：
+一个 Object 字段，属性包含：标题（主属性）/作者/正文/点赞/收藏/评论/转发/发布时间/
+**图片（Attachment）**/采集状态/采集时间。配置时勾「获取扩展信息」可把每个属性自动同步成
+独立列（host 原生能力），其中「图片」是真正渲染的附件列。
 
-| 属性 | 类型 | 说明 |
-|---|---|---|
-| 标题 | Text（primary） | 笔记标题 |
-| 作者 | Text | 作者昵称 |
-| 正文 | Text | 正文内容 |
-| 点赞数 / 收藏数 / 评论数 / 转发数 | Text | 互动数据（可能是「1.2万」展示串，故用文本） |
-| 发布时间 | Text | 北京时间字符串 |
-| **图片** | **Attachment** | 笔记图片，最多 5 张；附件 URL 由钉钉服务端下载转存后渲染 |
-| 采集状态 | Text | `ok` / `login_required` / … |
-| 采集时间 | Text | ISO 时间戳 |
+要点（钉钉 FaaS，均已本地实测确认）：
 
-## 关键实现说明
+- **Object 属性除文本外也支持 Attachment**：SDK 类型 `PureObjectFieldProperty` 允许
+  `Text/Number/Link/Attachment`（钉钉开发文档「只支持文本」的说法已过时）。所以**不需要再单独做
+  一个图片包**——一个 Object 字段就能同时带出文本摘要和渲染图片的附件列。
+- **图片会被钉钉下载转存**：附件 url 给 `image_proxy_urls`（caiji 代理）后，钉钉服务端抓图
+  存进自有 OSS，从 `alidocs2-zjk-cdn.dingtalk.com` 渲染，**图片持久、不随小红书 CDN 过期裂图**。
+- **附件最多 5 张**：超过会报「最多上传5张图片」，故 `images` 封顶取前 5 张。
+- 外部请求必须用 `context.fetch`（node-fetch 语法），不能用 axios/got。
+- 域名白名单 `setDomainList(['caiji.aipaint.cc'])`，只填域名。
 
-- **外部请求**：仅访问采集 API，域名白名单 `setDomainList(['caiji.aipaint.cc'])`；通过
-  `context.fetch` 调用（node-fetch 语法），未使用 axios/got 等被禁库。
-- **无需授权**：采集 API 为公开只读接口，不涉及任何密钥 / 用户凭证，故未配置 `authorizations`。
-- **输入**：`FieldSelect` 支持 `Link` / `Text` 两种链接列。
-- **结果一致性**：`resultType` 为 `Object`，与 `execute` 返回的数据结构严格对应；仅当采集
-  `status === 'ok'` 时写入，其余（login_required/redirected/empty/error）返回错误码 + 文案，
-  让用户可见并手动重试。
-- **图片**：`images` 属性为 `Attachment`，`execute` 返回
-  `[{ fileName, type: 'image', url }]`（`url` 用采集 API 的图片代理地址，公开可访问）；
-  附件字段有「最多 5 张」上限，故封顶取前 5 张。
-- **i18n**：`zh-CN` / `en-US` / `ja-JP` 三语。
+> 早期曾拆成两个包（本字段只出文本 + 一个只出图的 Attachment 包）；实测确认 Object 属性
+> 支持 Attachment 后已合并到本字段，原独立图片包已删除。
 
-入口代码全部在 `src/index.ts`（单文件）。
-
-## 构建 / 自检
+## 开发 / 调试
 
 ```bash
 npm install
-npm run typecheck     # tsc 类型自检
-npm run build         # dingtalk-docs-cool-app pack:field，产出上架包
-```
-
-## 本地调试
-
-```bash
+npm run typecheck     # 类型自检
 npm run start         # 启动本地 FaaS 调试服务（dingtalk-docs-cool-app start:field）
 ```
 
-在 AI 表格里：插件 →「字段模板开发助手」→「FaaS 调试」→ 添加字段 → 选本 FaaS 字段 → 调试。
+在 AI 表格里：插件 → 「AI 字段开发助手」→「FaaS 调试」→ 添加字段 → 选本 FaaS 字段 → 调试。
 
-> 调试态只触发当前视图第一行、需常驻本地服务、不支持自动更新（自动更新为上架后能力）。
+> ⚠️ 调试态限制：只触发**当前视图第一行**、需常驻本地服务、**不支持自动更新**（自动更新只能上架后体验）。
+> Chrome 需关 web-security 才能 https→http：
+>
+> ```bash
+> open -na "Google Chrome" --args --user-data-dir="/tmp/chrome_dev_test" --disable-web-security --disable-site-isolation-trials --disable-features=BlockInsecurePrivateNetworkRequests
+> ```
 
-## 采集 API 契约
+### ⚠️ FaaS `execute` 入参结构（踩过坑，务必按此取值）
 
-`GET /extract?url=<encodeURIComponent>&retries=2` → `{ ok, data }`，本字段用到的 `data` 键：
+`execute(context, params)` 的 `params` **不是直接给值**，而是「引用 + 共享值」两段式：
 
+```jsonc
+{
+  "formData":     { "noteLink": { "type": "fieldRef", "value": { "fieldId": "Cqfx1VU" } } },
+  "sharedFields": { "Cqfx1VU": { "fieldName": "标题", "value": "https://www.xiaohongshu.com/..." } }
+}
 ```
-title / content / author / liked_count / collected_count / comment_count /
-share_count / publish_time / image_proxy_urls[] / status / fetched_at
+
+`FieldSelect` 选中的列，`formData.<key>` 只有 `fieldId` 引用，**真实单元格值在 `sharedFields[fieldId].value`**。
+本项目用 `resolveNoteLink()` 解析。直接读 `formData.noteLink` 会永远 `undefined` → 报 `errEmpty`(code 300204)。
+
+另外：`execute` **运行时返回的 `msg` 不做 i18n 占位替换**，报错文案必须是真实字符串，用 `t()` 会原样输出 `${{key}}`。
+
+> 完整排查过程见 `docs/钉钉AI表格插件接入与踩坑记录.md` 坑 7。
+
+## 打包 / 上架
+
+```bash
+npm run build         # dingtalk-docs-cool-app pack:field
 ```
+
+上架走**人工审核**（填上架申请表单，专员拉群），非自助。表单参考见
+`.claude/skills/ai-table-plugin-generator/ai-field-decorator-generator/references/`。
+
+## 与采集 API 的契约
+
+`GET /extract?url=<encoded>&retries=2` → `{ ok, data }`，本字段用到的 `data` 键：
+`title / content / author / liked_count / collected_count / comment_count / share_count /
+publish_time / image_proxy_urls[] / status / fetched_at`。仅 `status==='ok'` 写入卡片，
+其余（login_required/redirected/empty/error）返回错误态让用户可见并手动重试。
+
+## 新需求
+
+- 采集时间格式化
+- 增加文章仿写功能
