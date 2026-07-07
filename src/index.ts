@@ -30,6 +30,7 @@ interface ExtractData {
   status?: string;
   error?: string;
   fetched_at?: string;
+  engine?: string; // 实际出数引擎：home-cdp=自研 / tikhub=第三方付费
 }
 
 // FieldSelect 选中的链接列，取到的单元格值：Link 字段是 {url,text}，Text 字段是 string。
@@ -58,6 +59,7 @@ fieldDecoratorKit.setDecorator({
       pImages: '图片',
       pStatus: '采集状态',
       pFetchedAt: '采集时间',
+      pSource: '采集来源',
       errEmpty: '链接为空，请在引用字段里填入小红书笔记链接',
       errFetch: '采集失败',
     },
@@ -74,6 +76,7 @@ fieldDecoratorKit.setDecorator({
       pImages: 'Images',
       pStatus: 'Status',
       pFetchedAt: 'Fetched at',
+      pSource: 'Source',
       errEmpty: 'Link is empty; fill the referenced field with a Xiaohongshu note link',
       errFetch: 'Extract failed',
     },
@@ -90,6 +93,7 @@ fieldDecoratorKit.setDecorator({
       pImages: '画像',
       pStatus: 'ステータス',
       pFetchedAt: '取得日時',
+      pSource: '取得元',
       errEmpty: 'リンクが空です。参照フィールドに小紅書ノートリンクを入力してください',
       errFetch: '取得に失敗しました',
     },
@@ -128,6 +132,7 @@ fieldDecoratorKit.setDecorator({
         { key: 'images', type: FieldType.Text, title: t('pImages') },
         { key: 'status', type: FieldType.Text, title: t('pStatus') },
         { key: 'fetchedAt', type: FieldType.Text, title: t('pFetchedAt') },
+        { key: 'source', type: FieldType.Text, title: t('pSource') },
       ],
     },
   },
@@ -178,6 +183,8 @@ fieldDecoratorKit.setDecorator({
           images: (d.image_proxy_urls || []).join('\n'),
           status: d.status || '',
           fetchedAt: d.fetched_at || '',
+          source:
+            d.engine === 'home-cdp' ? '自研' : d.engine === 'tikhub' ? '第三方付费' : '',
         },
       };
     } catch (error) {
