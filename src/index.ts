@@ -1,20 +1,33 @@
 // 小红书笔记采集 —— 钉钉 AI 表格 AI 字段（FaaS 版，Object 摘要形态 A）
 //
 // 行级、声明式：在「链接」列填好小红书笔记链接，本 AI 字段逐行调用已上线的采集 API
-// （https://caiji.aipaint.cc/extract），把标题/作者/正文/点赞/收藏/评论/转发/发布时间/
-// 封面链接/状态/采集时间塞进一个 Object 单元格卡片。引用的链接列变更时自动重算。
+// （https://caiji.aipaint.cc/v2/extract，强制鉴权），把标题/作者/正文/点赞/收藏/评论/转发/
+// 发布时间/封面链接/状态/采集时间塞进一个 Object 单元格卡片。引用的链接列变更时自动重算。
 //
 // 设计约束（钉钉 FaaS）：一个字段=一列。图片以**文本链接**形式输出（多张用换行分隔），
 // 不再用 Attachment 附件——生产环境不支持附件形态，故统一降级为纯文本 URL，可直接复制/点开。
 // 复用 /extract 的 ?cache 边缘缓存（status=ok 缓存 10 分钟）。外部请求必须走 context.fetch
 // （node-fetch 语法）。
 
-import { FieldType, fieldDecoratorKit, FormItemComponent, FieldExecuteCode } from 'dingtalk-docs-cool-app';
+import {
+  FieldType,
+  fieldDecoratorKit,
+  FormItemComponent,
+  FieldExecuteCode,
+  AuthorizationType,
+} from 'dingtalk-docs-cool-app';
 const { t } = fieldDecoratorKit;
 
 // 采集 API 域名白名单：只填域名，不带协议/路径/端口，子域自动放通。
 const EXTRACT_HOST = 'caiji.aipaint.cc';
 fieldDecoratorKit.setDomainList([EXTRACT_HOST]);
+
+// /v2/extract 鉴权走官方 MultiHeaderToken 授权：代码里只声明需要 x-api-token 头，
+// 真值由配置字段的人在授权表单里填（worker EXTRACT_TOKENS 里 dingtalk 名下的值），
+// 平台托管、运行时经 context.fetch(url, opts, AUTH_ID) 注入——源码/打包产物均不含秘钥，
+// 公开镜像仓（map-c/xhs-field-decorator）可放心同步。
+// 本地调试：项目根目录 config.json（已 gitignore）写 {"authorizations": {"x-api-token": "<真值>"}}。
+const AUTH_ID = 'xhsExtractAuth';
 
 // 采到一条返回的 data 契约（与 worker src/index.js 对齐，仅列出本字段用到的键）。
 interface ExtractData {
@@ -61,6 +74,18 @@ interface ExecuteFormData {
 fieldDecoratorKit.setDecorator({
   name: '小红书笔记采集',
 
+  // 官方授权托管：MultiHeaderToken → 平台把用户填的值按 params.key 注入请求头。
+  // 文案不走 t()：授权表单渲染是否解析 ${{}} 占位未经验证，直接给中文最稳。
+  authorizations: {
+    id: AUTH_ID,
+    type: AuthorizationType.MultiHeaderToken,
+    platform: EXTRACT_HOST,
+    required: true,
+    label: '采集服务授权',
+    tooltips: '请填写采集服务（caiji.aipaint.cc）的访问 token，向服务提供方获取',
+    params: [{ key: 'x-api-token', placeholder: '采集服务访问 token' }],
+  },
+
   i18nMap: {
     'zh-CN': {
       noteLink: '笔记链接',
@@ -81,6 +106,7 @@ fieldDecoratorKit.setDecorator({
       eRedirected: '链接已过期或失效，请重新分享获取新链接',
       eEmpty: '未找到笔记内容（可能已删除或设为私密）',
       eFetchFailed: '采集失败，请稍后重试',
+      eAuthFailed: '采集服务授权无效，请在字段配置里重新填写访问 token',
     },
     'en-US': {
       noteLink: 'Note link',
@@ -100,6 +126,7 @@ fieldDecoratorKit.setDecorator({
       eRedirected: 'Link expired or invalid; re-share to get a fresh link',
       eEmpty: 'No note content found (deleted or private)',
       eFetchFailed: 'Extract failed; please retry later',
+      eAuthFailed: 'Invalid extract-service token; re-enter it in the field authorization settings',
     },
     'ja-JP': {
       noteLink: 'ノートリンク',
@@ -119,6 +146,7 @@ fieldDecoratorKit.setDecorator({
       eRedirected: 'リンクが失効しています。再共有して新しいリンクを取得してください',
       eEmpty: 'ノート内容が見つかりません（削除または非公開）',
       eFetchFailed: '取得に失敗しました。後でもう一度お試しください',
+      eAuthFailed: '取得サービスの認証が無効です。フィールド設定でトークンを再入力してください',
     },
   },
 
@@ -130,6 +158,7 @@ fieldDecoratorKit.setDecorator({
     empty: t('eEmpty'),
     empty_shell: t('eEmpty'),
     fetch_failed: t('eFetchFailed'),
+    auth_failed: t('eAuthFailed'),
   },
 
   formItems: [
@@ -183,11 +212,27 @@ fieldDecoratorKit.setDecorator({
     }
 
     try {
-      const api = `https://${EXTRACT_HOST}/extract?url=${encodeURIComponent(link)}&retries=2`;
-      const response = await context.fetch(api, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      });
+      // 固定走 /v2/extract（强制鉴权版）。第三参 AUTH_ID 让平台把托管的授权头
+      // （x-api-token）注入本次请求，代码不接触 token 值。
+      const api = `https://${EXTRACT_HOST}/v2/extract?url=${encodeURIComponent(link)}&retries=2`;
+      const response = await context.fetch(
+        api,
+        {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+        },
+        AUTH_ID
+      );
+
+      // 401/403 = token 缺失或错误（worker 鉴权前置，先于业务返回）。给用户指向授权配置的文案。
+      if (response.status === 401 || response.status === 403) {
+        return {
+          code: FieldExecuteCode.Error,
+          data: null,
+          errorMessage: 'auth_failed',
+          msg: `采集服务鉴权失败（HTTP ${response.status}）：检查授权表单里的 x-api-token 是否为 worker EXTRACT_TOKENS 中 dingtalk 名下的值。`,
+        };
+      }
 
       const json = (await response.json()) as { ok?: boolean; data?: ExtractData };
       const d: ExtractData = json?.data || {};

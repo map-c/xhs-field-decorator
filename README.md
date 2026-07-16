@@ -1,7 +1,7 @@
 # xhs-field-decorator
 
 小红书笔记采集的**钉钉 AI 表格 AI 字段（FaaS 版）**。与边栏插件（`dingtalk-plugin/`）并行，
-共用同一个已上线的采集 API `https://caiji.aipaint.cc/extract`。
+共用同一个已上线的采集 API `https://caiji.aipaint.cc/v2/extract`（强制鉴权，见「授权」）。
 
 > 这是「AI 字段」入口：行级、声明式——在「链接」列填好笔记链接，本字段逐行自动采集并把结果
 > 写进**一个 Object 摘要单元格**，引用列变更时自动重算。无需点按钮（区别于边栏插件的手动交互）。
@@ -26,11 +26,25 @@
 > 早期曾拆成两个包（本字段只出文本 + 一个只出图的 Attachment 包）；实测确认 Object 属性
 > 支持 Attachment 后已合并到本字段，原独立图片包已删除。
 
+## 授权（官方 MultiHeaderToken，秘钥不进代码/打包产物）
+
+`/v2/extract` 需要 `x-api-token` 请求头。本字段用 SDK 官方授权托管，而**不是**把 token
+写进源码打包：
+
+- 代码里只有 `authorizations` 声明（要一个名为 `x-api-token` 的头 + 提示文案）和
+  `context.fetch(url, opts, AUTH_ID)` 调用，**不含任何秘钥**——公开镜像仓、官方拉仓打包都安全。
+- **生产**：配置字段时授权表单会要求填 token（worker `EXTRACT_TOKENS` 里 `dingtalk` 名下的值），
+  钉钉平台托管存储，运行时自动注入请求头。
+- **本地调试**：`cp config.example.json config.json` 填入真值（`config.json` 已 gitignore）。
+  dev server 会读取其中 `authorizations` 对象并注入请求头。
+- token 填错/未填时字段返回「采集服务授权无效」（`errorMessage: auth_failed`）。
+
 ## 开发 / 调试
 
 ```bash
 npm install
 npm run typecheck     # 类型自检
+cp config.example.json config.json   # 填入 x-api-token 真值（勿提交）
 npm run start         # 启动本地 FaaS 调试服务（dingtalk-docs-cool-app start:field）
 ```
 
@@ -74,7 +88,7 @@ npm run build         # dingtalk-docs-cool-app pack:field
 
 ## 与采集 API 的契约
 
-`GET /extract?url=<encoded>&retries=2` → `{ ok, data }`，本字段用到的 `data` 键：
+`GET /v2/extract?url=<encoded>&retries=2`（头带 `x-api-token`，由平台注入）→ `{ ok, data }`，本字段用到的 `data` 键：
 `title / content / author / liked_count / collected_count / comment_count / share_count /
 publish_time / image_proxy_urls[] / status / fetched_at`。仅 `status==='ok'` 写入卡片，
 其余（login_required/redirected/empty/error）返回错误态（见「错误如何透出给用户」）让用户可见并手动重试。
